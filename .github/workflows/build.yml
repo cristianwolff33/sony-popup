@@ -27,6 +27,7 @@ jobs:
           python -m PyInstaller --noconfirm --clean --windowed --onedir
           --name SonyPopup --icon sony_popup.ico
           --add-data "sony_popup.ico;."
+          --add-data "headphones.png;."
           --collect-all winrt
           --exclude-module PySide6.QtWebEngineCore --exclude-module PySide6.QtWebEngineWidgets
           --exclude-module PySide6.QtQml --exclude-module PySide6.QtQuick --exclude-module PySide6.QtPdf

@@ -37,8 +37,8 @@ pythonw sony_popup.py
 
 ### Zdjęcie słuchawek
 
-Repo nie zawiera zdjęcia produktu. Wrzuć własne jako `headphones.png` (lub `.jpg`/`.webp`) obok
-`sony_popup.py` przed budowaniem — bez niego popup pokazuje ikonę.
+`headphones.png` to zdjęcie produktowe Sony — repo prywatne, tylko na własny użytek.
+Żeby podmienić, wrzuć inne `headphones.png` (lub `.jpg`/`.webp`) i przebuduj.
 
 ## Jak to działa
 

@@ -4,8 +4,3 @@ __pycache__/
 build/
 dist/
 *.spec
-# zdjęcie produktu (prawa autorskie Sony) — dodaj własne lokalnie
-headphones.png
-headphones.jpg
-headphones.jpeg
-headphones.webp
