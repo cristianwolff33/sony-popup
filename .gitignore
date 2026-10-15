@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.log
+build/
+dist/
+*.spec
+# zdjęcie produktu (prawa autorskie Sony) — dodaj własne lokalnie
+headphones.png
+headphones.jpg
+headphones.jpeg
+headphones.webp
