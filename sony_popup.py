@@ -16,7 +16,7 @@ import threading
 from pathlib import Path
 
 from PySide6.QtCore import QEasingCurve, QRectF, QSize, QObject, QPoint, QPropertyAnimation, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QIcon, QImage, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QIcon, QImage, QLinearGradient, QPainter, QPen, QPixmap
 from PySide6.QtGui import QActionGroup
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QMenu,
                                QProgressBar, QPushButton, QSlider, QSystemTrayIcon, QVBoxLayout, QWidget)
@@ -230,8 +230,346 @@ async def watch(bridge: Bridge):
     await asyncio.Event().wait()  # trzyma referencję do dev i pętlę przy życiu
 
 
+# ---------- własne kontrolki ----------
+
+import math
+
+from PySide6.QtCore import QPointF
+from PySide6.QtGui import QBrush, QFontMetrics, QRadialGradient
+from PySide6.QtWidgets import QAbstractButton
+
+
+def _lerp(a, b, t):
+    return a + (b - a) * t
+
+
+class HeadphonesView(QWidget):
+    """Zdjęcie słuchawek: po najechaniu unosi się, lekko kołysze i przechyla za kursorem."""
+
+    def __init__(self, pixmap, height=140):
+        super().__init__()
+        self.pix = pixmap
+        self.setFixedHeight(height)
+        self.setMouseTracking(True)
+        self.hover = 0.0          # 0..1 płynne wejście/wyjście
+        self.tilt = 0.0           # -1..1 pozycja kursora w poziomie
+        self.tilt_y = 0.0
+        self._target_hover = 0.0
+        self._target_tilt = 0.0
+        self._target_tilt_y = 0.0
+        self.t = 0.0
+        self.pop = 0.0            # "podskok" przy kliknięciu
+        self._tick = QTimer(self, interval=16, timeout=self._step)
+
+    def enterEvent(self, e):
+        self._target_hover = 1.0
+        self._tick.start()
+
+    def leaveEvent(self, e):
+        self._target_hover = 0.0
+        self._target_tilt = self._target_tilt_y = 0.0
+        self._tick.start()
+
+    def mouseMoveEvent(self, e):
+        c = self.rect().center()
+        self._target_tilt = max(-1.0, min(1.0, (e.position().x() - c.x()) / (self.width() / 2)))
+        self._target_tilt_y = max(-1.0, min(1.0, (e.position().y() - c.y()) / (self.height() / 2)))
+
+    def mousePressEvent(self, e):
+        self.pop = 1.0
+        self._tick.start()
+
+    def _step(self):
+        self.t += 0.016
+        k = 0.14
+        self.hover = _lerp(self.hover, self._target_hover, k)
+        self.tilt = _lerp(self.tilt, self._target_tilt, k)
+        self.tilt_y = _lerp(self.tilt_y, self._target_tilt_y, k)
+        self.pop *= 0.88
+        idle = (abs(self.hover) < 0.002 and self._target_hover == 0 and self.pop < 0.002
+                and abs(self.tilt) < 0.002)
+        if idle:
+            self.hover = self.tilt = self.tilt_y = self.pop = 0.0
+            self._tick.stop()
+        self.update()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        cx, cy = self.width() / 2, self.height() / 2
+        h = self.hover
+        bob = math.sin(self.t * 2.4) * 4 * h                    # unoszenie
+        sway = math.sin(self.t * 1.7) * 3.0 * h                 # kołysanie (stopnie)
+        lift = -6 * h - 10 * self.pop
+        scale = 1.0 + 0.07 * h + 0.06 * self.pop
+        angle = sway + self.tilt * 7 * h
+        p.setPen(Qt.NoPen)
+        # poświata za słuchawkami (mocniejsza przy najechaniu)
+        gr = self.pix.height() * (0.62 + 0.08 * h)
+        glow = QRadialGradient(QPointF(cx, cy - 4 + lift * 0.5), gr)
+        glow.setColorAt(0, QColor(255, 255, 255, int(38 + 30 * h)))
+        glow.setColorAt(0.55, QColor(255, 255, 255, int(12 + 10 * h)))
+        glow.setColorAt(1, QColor(255, 255, 255, 0))
+        p.setBrush(QBrush(glow))
+        p.drawEllipse(QPointF(cx, cy - 4 + lift * 0.5), gr, gr)
+        # cień "na podłodze": mniejszy i bledszy, gdy słuchawki się unoszą
+        sh_w = self.pix.width() * (0.55 - 0.15 * h)
+        fy = self.height() - 9
+        sh = QRadialGradient(QPointF(cx, fy), sh_w / 2)
+        sh.setColorAt(0, QColor(0, 0, 0, int(150 - 60 * h)))
+        sh.setColorAt(1, QColor(0, 0, 0, 0))
+        p.setBrush(QBrush(sh))
+        p.drawEllipse(QPointF(cx, fy), sh_w / 2, 6)
+        # słuchawki
+        p.translate(cx + self.tilt * 5 * h, cy + bob + lift + self.tilt_y * 3 * h)
+        p.rotate(angle)
+        p.scale(scale, scale)
+        # perspektywa: lekkie ściśnięcie po stronie, w którą "obraca się" obraz
+        p.shear(0.0, -self.tilt * 0.04 * h)
+        p.drawPixmap(QPointF(-self.pix.width() / 2, -self.pix.height() / 2 - 4), self.pix)
+        p.end()
+
+
+class Segmented(QWidget):
+    """Przełącznik w stylu iOS z przesuwaną pigułką."""
+    changed = Signal(str)
+
+    def __init__(self, items):
+        super().__init__()
+        self.items = items
+        self.current = None
+        self.setFixedHeight(40)
+        self.setMouseTracking(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self._x = None            # animowana pozycja pigułki (indeks, float)
+        self._hover = -1
+        self._tick = QTimer(self, interval=16, timeout=self._step)
+        self.setFont(QFont("Segoe UI", 10, QFont.DemiBold))
+
+    def set_current(self, key):
+        if key == self.current:
+            return
+        self.current = key
+        if self._x is None:
+            self._x = float(self._index(key))
+        self._tick.start()
+        self.update()
+
+    def _index(self, key):
+        return next((i for i, (k, _) in enumerate(self.items) if k == key), 0)
+
+    def _step(self):
+        target = float(self._index(self.current))
+        self._x = _lerp(self._x, target, 0.22)
+        if abs(self._x - target) < 0.003:
+            self._x = target
+            self._tick.stop()
+        self.update()
+
+    def _slot(self, pos):
+        return max(0, min(len(self.items) - 1, int(pos.x() / (self.width() / len(self.items)))))
+
+    def mouseMoveEvent(self, e):
+        i = self._slot(e.position())
+        if i != self._hover:
+            self._hover = i
+            self.update()
+
+    def leaveEvent(self, e):
+        self._hover = -1
+        self.update()
+
+    def mouseReleaseEvent(self, e):
+        if not self.isEnabled():
+            return
+        key = self.items[self._slot(e.position())][0]
+        self.set_current(key)
+        self.changed.emit(key)
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(self.rect())
+        n = len(self.items)
+        w = r.width() / n
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, 22))
+        p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
+        on = self.isEnabled()
+        if self._hover >= 0 and on and self.items[self._hover][0] != self.current:
+            p.setBrush(QColor(255, 255, 255, 14))
+            hr = QRectF(self._hover * w + 3, 3, w - 6, r.height() - 6)
+            p.drawRoundedRect(hr, hr.height() / 2, hr.height() / 2)
+        if self.current is not None and self._x is not None:
+            pill = QRectF(self._x * w + 3, 3, w - 6, r.height() - 6)
+            g = QLinearGradient(pill.topLeft(), pill.bottomLeft())
+            g.setColorAt(0, QColor("#2b95ff") if on else QColor("#5a5a5e"))
+            g.setColorAt(1, QColor("#0a6fe0") if on else QColor("#48484a"))
+            p.setBrush(g)
+            p.drawRoundedRect(pill, pill.height() / 2, pill.height() / 2)
+        f = QFont(self.font())
+        for size in (10, 9.5, 9, 8.5, 8):
+            f.setPointSizeF(size)
+            if max(QFontMetrics(f).horizontalAdvance(l) for _, l in self.items) <= w - 14:
+                break
+        p.setFont(f)
+        for i, (k, label) in enumerate(self.items):
+            sel = abs(self._x - i) < 0.5 if self._x is not None else False
+            p.setPen(QColor(255, 255, 255) if (sel and on) else QColor(255, 255, 255, 150 if on else 90))
+            p.drawText(QRectF(i * w, 0, w, r.height()), Qt.AlignCenter, label)
+        p.end()
+
+
+class RoundButton(QAbstractButton):
+    """Okrągły przycisk z animacją najechania i wciśnięcia."""
+
+    def __init__(self, kind, size, primary=False):
+        super().__init__()
+        self.kind = kind
+        self.primary = primary
+        self.setFixedSize(size, size)
+        self.setCursor(Qt.PointingHandCursor)
+        self._h = 0.0
+        self._p = 0.0
+        self._th = 0.0
+        self._tp = 0.0
+        self._tick = QTimer(self, interval=16, timeout=self._step)
+
+    def set_kind(self, kind):
+        self.kind = kind
+        self.update()
+
+    def enterEvent(self, e):
+        self._th = 1.0
+        self._tick.start()
+
+    def leaveEvent(self, e):
+        self._th = 0.0
+        self._tick.start()
+
+    def mousePressEvent(self, e):
+        self._tp = 1.0
+        self._tick.start()
+        super().mousePressEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        self._tp = 0.0
+        self._tick.start()
+        super().mouseReleaseEvent(e)
+
+    def _step(self):
+        self._h = _lerp(self._h, self._th, 0.25)
+        self._p = _lerp(self._p, self._tp, 0.35)
+        if abs(self._h - self._th) < 0.01 and abs(self._p - self._tp) < 0.01:
+            self._h, self._p = self._th, self._tp
+            self._tick.stop()
+        self.update()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        s = self.width()
+        scale = 1.0 + 0.06 * self._h - 0.10 * self._p
+        p.translate(s / 2, s / 2)
+        p.scale(scale, scale)
+        r = s / 2 - 2
+        p.setPen(Qt.NoPen)
+        if self.primary:
+            p.setBrush(QColor(255, 255, 255, 235 + int(20 * self._h)))
+            ic = QColor(28, 28, 30)
+        else:
+            p.setBrush(QColor(255, 255, 255, 20 + int(26 * self._h)))
+            ic = QColor(255, 255, 255)
+        p.drawEllipse(QPointF(0, 0), r, r)
+        isz = int(s * (0.46 if self.primary else 0.44))
+        pm = media_icon(self.kind, ic).pixmap(isz, isz)
+        off = 2 if self.kind == "play" else 0   # optyczne wyśrodkowanie trójkąta
+        p.drawPixmap(int(-isz / 2 + off), int(-isz / 2), pm)
+        p.end()
+
+
+class PillButton(QAbstractButton):
+    """Przycisk 'Gotowe' — pigułka z delikatnym hover/press."""
+
+    def __init__(self, text):
+        super().__init__()
+        self.setText(text)
+        self.setFixedHeight(40)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFont(QFont("Segoe UI", 11, QFont.DemiBold))
+        self._h = 0.0
+        self._th = 0.0
+        self._tick = QTimer(self, interval=16, timeout=self._step)
+
+    def enterEvent(self, e):
+        self._th = 1.0
+        self._tick.start()
+
+    def leaveEvent(self, e):
+        self._th = 0.0
+        self._tick.start()
+
+    def _step(self):
+        self._h = _lerp(self._h, self._th, 0.25)
+        if abs(self._h - self._th) < 0.01:
+            self._h = self._th
+            self._tick.stop()
+        self.update()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        if self.isDown():
+            r.adjust(3, 2, -3, -2)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, 26 + int(22 * self._h)))
+        p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
+        p.setPen(QColor(255, 255, 255))
+        p.drawText(r, Qt.AlignCenter, self.text())
+        p.end()
+
+
+class BatteryBar(QWidget):
+    """Pasek baterii z kolorem zależnym od poziomu i płynnym napełnianiem."""
+
+    def __init__(self):
+        super().__init__()
+        self.setFixedHeight(8)
+        self.value = 0.0
+        self.target = 0
+        self._tick = QTimer(self, interval=16, timeout=self._step)
+
+    def setValue(self, v):
+        self.target = v
+        self.value = 0.0          # napełnianie od zera przy każdym pokazaniu popupu
+        self._tick.start()
+
+    def _step(self):
+        self.value = _lerp(self.value, self.target, 0.12)
+        if abs(self.value - self.target) < 0.3:
+            self.value = self.target
+            self._tick.stop()
+        self.update()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(self.rect())
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, 30))
+        p.drawRoundedRect(r, 4, 4)
+        lvl = self.target
+        col = QColor("#30d158") if lvl > 40 else QColor("#ffd60a") if lvl > 15 else QColor("#ff453a")
+        fill = QRectF(0, 0, max(8.0, r.width() * self.value / 100), r.height())
+        p.setBrush(col)
+        p.drawRoundedRect(fill, 4, 4)
+        p.end()
+
+
 class Popup(QWidget):
-    W, H = 380, 470
+    W, H = 380, 500
     mode_requested = Signal(str, object)  # (tryb, poziom otoczenia albo None)
 
     def __init__(self):
@@ -266,43 +604,25 @@ class Popup(QWidget):
         title.setFont(QFont("Segoe UI", 15, QFont.DemiBold))
         title.setAlignment(Qt.AlignCenter)
 
-        img = QLabel()
-        img.setAlignment(Qt.AlignCenter)
         pix = load_image(IMG) if IMG else None
         if pix:
-            img.setPixmap(pix)
-            glow = QGraphicsDropShadowEffect(img)  # jasna poświata, żeby czarne słuchawki odcinały się od ciemnej karty
-            glow.setColor(QColor(255, 255, 255, 110))
-            glow.setBlurRadius(28)
-            glow.setOffset(0, 0)
-            img.setGraphicsEffect(glow)
+            img = HeadphonesView(pix, height=pix.height() + 36)
         else:
+            img = QLabel()
+            img.setAlignment(Qt.AlignCenter)
             img.setText("\U0001F3A7")
             img.setFont(QFont("Segoe UI Emoji", 54))
 
         self.batt_lbl = QLabel()
         self.batt_lbl.setAlignment(Qt.AlignCenter)
         self.batt_lbl.setFont(QFont("Segoe UI", 12))
-        self.bar = QProgressBar()
-        self.bar.setTextVisible(False)
-        self.bar.setFixedHeight(8)
+        self.bar = BatteryBar()
 
         # --- tryb dźwięku ---
-        seg = QWidget()
-        seg_lay = QHBoxLayout(seg)
-        seg_lay.setContentsMargins(0, 4, 0, 0)
-        seg_lay.setSpacing(6)
-        self.mode_group = QButtonGroup(self)
-        self.mode_btns = {}
-        for mode, label in MODES:
-            b = QPushButton(label)
-            b.setProperty("seg", True)
-            b.setCheckable(True)
-            b.setEnabled(False)
-            b.clicked.connect(lambda _=False, m=mode: self.mode_requested.emit(m, None))
-            self.mode_group.addButton(b)
-            self.mode_btns[mode] = b
-            seg_lay.addWidget(b)
+        seg = Segmented(MODES)
+        seg.setEnabled(False)
+        seg.changed.connect(lambda m: self.mode_requested.emit(m, None))
+        self.seg = seg
 
         self.amb_row = QWidget()
         amb_lay = QHBoxLayout(self.amb_row)
@@ -331,23 +651,19 @@ class Popup(QWidget):
         player = QWidget()
         pl_lay = QHBoxLayout(player)
         pl_lay.setContentsMargins(0, 0, 0, 0)
-        pl_lay.setSpacing(18)
+        pl_lay.setSpacing(22)
         pl_lay.addStretch(1)
         self.play_btn = None
         for kind, vk in (("prev", VK_PREV), ("play", VK_PLAY_PAUSE), ("next", VK_NEXT)):
-            b = QPushButton()
-            b.setIcon(media_icon(kind))
             big = kind == "play"
-            b.setIconSize(QSize(26, 26) if big else QSize(20, 20))
-            b.setFixedSize(54 if big else 44, 54 if big else 44)
-            b.setStyleSheet(f"QPushButton {{ border-radius: {27 if big else 22}px; padding: 0; }}")
+            b = RoundButton(kind, 58 if big else 44, primary=big)
             b.clicked.connect(lambda _=False, v=vk: self._media(v))
             pl_lay.addWidget(b)
             if big:
                 self.play_btn = b
         pl_lay.addStretch(1)
 
-        btn = QPushButton("Gotowe")
+        btn = PillButton("Gotowe")
         btn.clicked.connect(self.slide_out)
 
         for w in (title, img, self.batt_lbl, self.bar, seg, self.amb_row, self.nc_lbl,
@@ -406,7 +722,7 @@ class Popup(QWidget):
 
     def _set_playing(self, playing):
         self._playing = playing
-        self.play_btn.setIcon(media_icon("pause" if playing else "play"))
+        self.play_btn.set_kind("pause" if playing else "play")
 
     def set_media(self, info):
         if info is False:          # brak winrt-Windows.Media.Control
@@ -432,16 +748,16 @@ class Popup(QWidget):
             self.timer.start()
 
     def set_nc_available(self, ok):
-        for b in self.mode_btns.values():
-            b.setEnabled(ok)
+        self.seg.setEnabled(ok)
+        self.seg.update()
         self.amb.setEnabled(ok)
         self.nc_lbl.setText("" if ok else "Sterowanie niedostępne")
         self.nc_lbl.setVisible(not ok)
 
     def set_nc_state(self, st):
         mode = st.get("mode")
-        if mode in self.mode_btns:
-            self.mode_btns[mode].setChecked(True)
+        if mode in dict(MODES):
+            self.seg.set_current(mode)
         self.amb_row.setVisible(mode == MODE_AMBIENT)
         if not self.amb.isSliderDown():
             self.amb.setValue(st.get("level") or 1)
