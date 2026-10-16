@@ -1,5 +1,5 @@
 """
-Popup w stylu iOS dla Sony WH-1000XM6 na Windows.
+Popup w stylu iOS dla słuchawek Sony (WH-1000XM6, WH-ULT900N) na Windows.
 pip install PySide6 winrt-runtime winrt-Windows.Devices.Bluetooth winrt-Windows.Devices.Enumeration winrt-Windows.Foundation winrt-Windows.Foundation.Collections
 Wymaga sony_mdr.py w tym samym folderze (sterowanie ANC/otoczeniem).
 Opcjonalnie: pip install winrt-Windows.Media.Control  (tytuł/wykonawca aktualnego utworu)
@@ -35,13 +35,32 @@ except ImportError:
 log = logging.getLogger("sony_popup")
 MODES = [(MODE_NC, "Redukcja szumów"), (MODE_AMBIENT, "Otoczenie"), (MODE_OFF, "Wyłączone")]
 
-NAME = "WH-1000XM6"
+# Obsługiwane słuchawki: dopasowanie po nazwie Bluetooth; zdjęcie <key>.png obok skryptu/exe
+DEVICES = [
+    {"key": "wh-1000xm6", "name": "WH-1000XM6", "match": ["WH-1000XM6"], "fallback_img": "headphones"},
+    {"key": "wh-ult900n", "name": "WH-ULT900N", "match": ["WH-ULT900N", "ULT WEAR"]},
+]
+NAME = DEVICES[0]["name"]  # domyślne, zanim cokolwiek się połączy
 BATT_KEY = "{104EA319-6EE2-4701-BD47-8DDBF425BBE5} 2"  # DEVPKEY battery level (HFP)
 FROZEN = getattr(sys, "frozen", False)  # uruchomione jako SonyPopup.exe (PyInstaller)
 HERE = Path(sys._MEIPASS) if FROZEN else Path(__file__).resolve().parent      # zasoby (zdjęcie, ikona)
 APP_DIR = Path(sys.executable).parent if FROZEN else HERE                      # log obok exe/skryptu
-IMG = next((HERE / f"headphones{e}" for e in (".png", ".webp", ".jpg", ".jpeg")
-            if (HERE / f"headphones{e}").exists()), None)
+
+
+def device_for(name):
+    n = (name or "").lower()
+    return next((d for d in DEVICES if any(m.lower() in n for m in d["match"])), None)
+
+
+def device_image(dev):
+    for stem in (dev["key"], dev.get("fallback_img")):
+        if not stem:
+            continue
+        for e in (".png", ".webp", ".jpg", ".jpeg"):
+            if (HERE / f"{stem}{e}").exists():
+                return HERE / f"{stem}{e}"
+    return None
+
 CREATE_NO_WINDOW = 0x08000000
 
 
@@ -128,9 +147,9 @@ def media_icon(kind, color=QColor(255, 255, 255)):
     return QIcon(pm)
 
 
-def read_battery():
+def read_battery(name=NAME):
     ps = (
-        f"Get-PnpDevice -FriendlyName '*{NAME}*' | "
+        f"Get-PnpDevice -FriendlyName '*{name}*' | "
         f"Get-PnpDeviceProperty -KeyName '{BATT_KEY}' -ErrorAction SilentlyContinue | "
         "Where-Object { $_.Data -ne $null } | Select-Object -First 1 -ExpandProperty Data"
     )
@@ -144,9 +163,9 @@ def read_battery():
 
 
 class Bridge(QObject):
-    connected = Signal(object)     # adres BT (48 bit — nie mieści się w int Qt); popup + start sterowania
-    already_connected = Signal(object)  # przy starcie skryptu: tylko sterowanie, bez popupu
-    disconnected = Signal()
+    connected = Signal(object, str)          # (adres BT — 48 bit, nie int!, klucz urządzenia)
+    already_connected = Signal(object, str)  # przy starcie skryptu: tylko sterowanie, bez popupu
+    disconnected = Signal(str)
     battery = Signal(object)
     media = Signal(object)
     toggle = Signal()
@@ -211,23 +230,29 @@ class Controller:
 async def watch(bridge: Bridge):
     sel = BluetoothDevice.get_device_selector_from_pairing_state(True)
     infos = await DeviceInformation.find_all_async_aqs_filter(sel)
-    info = next((i for i in infos if NAME.lower() in i.name.lower()), None)
-    if info is None:
-        print(f"Nie znaleziono sparowanego urządzenia '{NAME}'")
+    devs = []
+    for info in infos:
+        d = device_for(info.name)
+        if not d:
+            continue
+        dev = await BluetoothDevice.from_id_async(info.id)
+        key = d["key"]
+        print(f"Nasłuchuję: {info.name}", flush=True)
+
+        def on_change(sender, _, key=key):
+            if sender.connection_status == BluetoothConnectionStatus.CONNECTED:
+                bridge.connected.emit(sender.bluetooth_address, key)
+            else:
+                bridge.disconnected.emit(key)
+
+        dev.add_connection_status_changed(on_change)
+        devs.append(dev)
+        if dev.connection_status == BluetoothConnectionStatus.CONNECTED:
+            bridge.already_connected.emit(dev.bluetooth_address, key)
+    if not devs:
+        print("Nie znaleziono sparowanych słuchawek: " + ", ".join(d["name"] for d in DEVICES))
         return
-    dev = await BluetoothDevice.from_id_async(info.id)
-    print(f"Nasłuchuję: {info.name}", flush=True)
-
-    def on_change(sender, _):
-        if sender.connection_status == BluetoothConnectionStatus.CONNECTED:
-            bridge.connected.emit(sender.bluetooth_address)
-        else:
-            bridge.disconnected.emit()
-
-    dev.add_connection_status_changed(on_change)
-    if dev.connection_status == BluetoothConnectionStatus.CONNECTED:
-        bridge.already_connected.emit(dev.bluetooth_address)
-    await asyncio.Event().wait()  # trzyma referencję do dev i pętlę przy życiu
+    await asyncio.Event().wait()  # trzyma referencje do urządzeń i pętlę przy życiu
 
 
 # ---------- własne kontrolki ----------
@@ -603,15 +628,19 @@ class Popup(QWidget):
         title = QLabel(NAME)
         title.setFont(QFont("Segoe UI", 15, QFont.DemiBold))
         title.setAlignment(Qt.AlignCenter)
+        self.title = title
 
-        pix = load_image(IMG) if IMG else None
-        if pix:
-            img = HeadphonesView(pix, height=pix.height() + 36)
-        else:
-            img = QLabel()
-            img.setAlignment(Qt.AlignCenter)
-            img.setText("\U0001F3A7")
-            img.setFont(QFont("Segoe UI Emoji", 54))
+        # zdjęcia wszystkich modeli ładowane raz; brak zdjęcia -> rysowana ikona
+        self._pix = {}
+        for d in DEVICES:
+            path = device_image(d)
+            pm = load_image(path) if path else None
+            if pm is None:
+                pm = tray_icon().pixmap(64, 64).scaledToHeight(110, Qt.SmoothTransformation)
+            self._pix[d["key"]] = pm
+        first = self._pix[DEVICES[0]["key"]]
+        img = HeadphonesView(first, height=max(p.height() for p in self._pix.values()) + 36)
+        self.img = img
 
         self.batt_lbl = QLabel()
         self.batt_lbl.setAlignment(Qt.AlignCenter)
@@ -676,6 +705,12 @@ class Popup(QWidget):
         self.anim.finished.connect(self._after_anim)
         self.timer = QTimer(self, singleShot=True, interval=8000, timeout=self.slide_out)
         self._hiding = False
+
+    def set_device(self, key):
+        d = next((d for d in DEVICES if d["key"] == key), DEVICES[0])
+        self.title.setText(d["name"])
+        self.img.pix = self._pix[d["key"]]
+        self.img.update()
 
     def _targets(self):
         g = QApplication.primaryScreen().availableGeometry()
@@ -893,9 +928,15 @@ def main():
     popup = Popup()
     bridge = Bridge()
     bridge.battery.connect(popup.show_battery)
+    current = {"dev": DEVICES[0]}   # ostatnio połączone słuchawki
+
+    def select_device(key):
+        current["dev"] = next(d for d in DEVICES if d["key"] == key)
+        popup.set_device(key)
 
     def fetch_battery():
-        threading.Thread(target=lambda: bridge.battery.emit(read_battery()), daemon=True).start()
+        name = current["dev"]["name"]
+        threading.Thread(target=lambda: bridge.battery.emit(read_battery(name)), daemon=True).start()
 
     ctrl = Controller(bridge)
     popup.mode_requested.connect(ctrl.set_mode)
@@ -903,10 +944,22 @@ def main():
     bridge.nc_available.connect(popup.set_nc_available)
 
     # Windows uzupełnia poziom baterii dopiero po zestawieniu HFP, stąd opóźnienie
-    bridge.connected.connect(lambda _a: QTimer.singleShot(3000, fetch_battery))
-    bridge.connected.connect(lambda a: ctrl.start(a))
-    bridge.already_connected.connect(lambda a: ctrl.start(a, delay=0.5))
-    bridge.disconnected.connect(ctrl.stop)
+    def on_connected(addr, key):
+        select_device(key)
+        QTimer.singleShot(3000, fetch_battery)
+        ctrl.start(addr)
+
+    def on_already(addr, key):
+        select_device(key)
+        ctrl.start(addr, delay=0.5)
+
+    def on_disconnected(key):
+        if key == current["dev"]["key"]:
+            ctrl.stop()
+
+    bridge.connected.connect(on_connected)
+    bridge.already_connected.connect(on_already)
+    bridge.disconnected.connect(on_disconnected)
 
     # info o utworze: odświeżane co 2 s, tylko gdy popup jest widoczny
     def fetch_media():
@@ -933,7 +986,8 @@ def main():
 
     def update_tray(level):
         tray.setIcon(tray_icon(level))
-        tray.setToolTip(f"{NAME}: {level}%" if level is not None else NAME)
+        name = current["dev"]["name"]
+        tray.setToolTip(f"{name}: {level}%" if level is not None else name)
 
     bridge.battery.connect(update_tray)
     menu = QMenu()
@@ -953,7 +1007,7 @@ def main():
     menu.addSeparator()
     menu.addAction("Zamknij", app.quit)
     tray.setContextMenu(menu)
-    tray.setToolTip(NAME)
+    tray.setToolTip("Sony Popup")
     tray.show()
 
     sys.exit(app.exec())

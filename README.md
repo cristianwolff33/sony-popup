@@ -1,6 +1,6 @@
 # Sony Popup
 
-Popup w stylu iOS dla słuchawek **Sony WH-1000XM6** na Windows — odpowiednik
+Popup w stylu iOS dla słuchawek **Sony WH-1000XM6** i **WH-ULT900N** na Windows — odpowiednik
 [AirPodsDesktop](https://github.com/SpriteOvO/AirPodsDesktop) dla Sony.
 
 ## Funkcje
@@ -37,8 +37,9 @@ pythonw sony_popup.py
 
 ### Zdjęcie słuchawek
 
-`headphones.png` to zdjęcie produktowe Sony — repo prywatne, tylko na własny użytek.
-Żeby podmienić, wrzuć inne `headphones.png` (lub `.jpg`/`.webp`) i przebuduj.
+`wh-1000xm6.png`, `wh-ult900n.png` — zdjęcia produktowe Sony (repo prywatne, tylko na własny użytek).
+Nazwa pliku = klucz modelu z listy `DEVICES` w `sony_popup.py`. Nowy model: dopisz go do `DEVICES`
+i wrzuć `<klucz>.png`.
 
 ## Jak to działa
 

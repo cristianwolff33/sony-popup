@@ -16,9 +16,10 @@ python -m pip install --quiet --upgrade pyinstaller -r "$src\requirements.txt"
 
 Write-Host "==> Buduję SonyPopup.exe (1-2 min)" -ForegroundColor Cyan
 Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
+# zdjęcia słuchawek: headphones.* oraz <model>.png (np. wh-ult900n.png)
 $extra = @()
-$img = Get-ChildItem $src -File | Where-Object Name -match '^headphones\.(png|jpe?g|webp)$' | Select-Object -First 1
-if ($img) { $extra += @('--add-data', "$($img.FullName);.") } else { Write-Host "   (brak headphones.png - popup pokaże ikonkę)" }
+Get-ChildItem $src -File | Where-Object Name -match '^(headphones|wh-[a-z0-9-]+)\.(png|jpe?g|webp)$' |
+    ForEach-Object { $extra += @('--add-data', "$($_.FullName);."); Write-Host "   + $($_.Name)" }
 python -m PyInstaller --noconfirm --clean --windowed --onedir `
     --name SonyPopup `
     --icon "$src\sony_popup.ico" `
