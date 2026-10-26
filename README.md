@@ -14,25 +14,27 @@ Popup w stylu iOS dla słuchawek **Sony WH-1000XM6** i **WH-ULT900N** na Windows
 
 ## Instalacja
 
-**Gotowy build:** pobierz `SonyPopup-win-x64.zip` z [Releases](../../releases) albo z artefaktów
-GitHub Actions, rozpakuj i uruchom `SonyPopup.exe`.
+**Instalator (zalecane):** pobierz `SonyPopup-Setup.exe` z [Releases](../../releases), uruchom
+i przeklikaj kreator. Nie wymaga uprawnień administratora ani Pythona. Tworzy skrót w menu Start,
+opcjonalnie autostart i ikonę na pulpicie; odinstalowanie przez *Ustawienia → Aplikacje*.
+
+Windows SmartScreen może ostrzec, bo instalator nie jest podpisany — *Więcej informacji → Uruchom mimo to*.
+
+**Wersja przenośna:** `SonyPopup-win-x64-portable.zip` — rozpakuj i uruchom `SonyPopup.exe`.
+
+**Nowe wydanie** (buduje instalator na GitHub Actions i publikuje w Releases):
+
+```powershell
+git tag v1.1.0
+git push origin v1.1.0
+```
+
+Każdy push na `main` też buduje instalator — do pobrania w *Actions → ostatnie uruchomienie → Artifacts*.
 
 **Ze źródeł** (Python 3.12 dla Windows):
 
 ```powershell
-git clone https://github.com/cristianwolff33/sony-popup
-cd sony-popup
 powershell -ExecutionPolicy Bypass -File .\install.ps1
-```
-
-Skrypt buduje exe (PyInstaller), instaluje do `%LOCALAPPDATA%\Programs\SonyPopup`,
-dodaje skrót w menu Start i autostart.
-
-**Bez budowania:**
-
-```powershell
-pip install -r requirements.txt
-pythonw sony_popup.py
 ```
 
 ### Zdjęcie słuchawek

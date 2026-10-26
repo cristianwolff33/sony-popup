@@ -855,7 +855,16 @@ def ensure_autostart():
     import os
     import winreg
     if FROZEN:
+        # wersja z instalatora: autostartem zarządza instalator (zadanie "Uruchamiaj razem z Windows"),
+        # aplikacja tylko poprawia ścieżkę, jeśli wpis już istnieje (np. po przeniesieniu folderu)
         cmd = f'"{sys.executable}"'
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_ALL_ACCESS) as k:
+            try:
+                if winreg.QueryValueEx(k, "SonyPopup")[0] != cmd:
+                    winreg.SetValueEx(k, "SonyPopup", 0, winreg.REG_SZ, cmd)
+            except FileNotFoundError:
+                pass
+        return
     else:
         pyw = Path(sys.executable).with_name("pythonw.exe")
         cmd = f'"{pyw}" "{Path(__file__).resolve()}"'
