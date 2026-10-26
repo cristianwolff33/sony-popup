@@ -1,7 +1,18 @@
 # Sony Popup
 
-Popup w stylu iOS dla słuchawek **Sony WH-1000XM6** i **WH-ULT900N** na Windows — odpowiednik
+Popup w stylu iOS dla słuchawek Sony na Windows — odpowiednik
 [AirPodsDesktop](https://github.com/SpriteOvO/AirPodsDesktop) dla Sony.
+
+## Obsługiwane modele
+
+| Model | Popup, bateria, odtwarzacz | Sterowanie ANC / otoczenie | Protokół |
+|---|---|---|---|
+| WH-1000XM6 | ✅ | ✅ (sprawdzone) | MDR v2 |
+| WH-1000XM5 | ✅ | ✅ (wg SonyHeadphonesClient) | MDR v2 |
+| WH-ULT900N | ✅ | niesprawdzone | MDR v2 |
+| WH-1000XM4 | ✅ | niesprawdzone | MDR v1 |
+
+Nowy model: dopisz go do `DEVICES` w `sony_popup.py` (nazwa Bluetooth, protokół) i wrzuć zdjęcie `<klucz>.png`.
 
 ## Funkcje
 

@@ -1,5 +1,5 @@
 """
-Popup w stylu iOS dla słuchawek Sony (WH-1000XM6, WH-ULT900N) na Windows.
+Popup w stylu iOS dla słuchawek Sony (WH-1000XM6/XM5/XM4, WH-ULT900N) na Windows.
 pip install PySide6 winrt-runtime winrt-Windows.Devices.Bluetooth winrt-Windows.Devices.Enumeration winrt-Windows.Foundation winrt-Windows.Foundation.Collections
 Wymaga sony_mdr.py w tym samym folderze (sterowanie ANC/otoczeniem).
 Opcjonalnie: pip install winrt-Windows.Media.Control  (tytuł/wykonawca aktualnego utworu)
@@ -36,9 +36,12 @@ log = logging.getLogger("sony_popup")
 MODES = [(MODE_NC, "Redukcja szumów"), (MODE_AMBIENT, "Otoczenie"), (MODE_OFF, "Wyłączone")]
 
 # Obsługiwane słuchawki: dopasowanie po nazwie Bluetooth; zdjęcie <key>.png obok skryptu/exe
+# proto: wersja protokołu Sony MDR do sterowania ANC (v2 = XM5 i nowsze, v1 = XM4 i starsze)
 DEVICES = [
-    {"key": "wh-1000xm6", "name": "WH-1000XM6", "match": ["WH-1000XM6"], "fallback_img": "headphones"},
-    {"key": "wh-ult900n", "name": "WH-ULT900N", "match": ["WH-ULT900N", "ULT WEAR"]},
+    {"key": "wh-1000xm6", "name": "WH-1000XM6", "match": ["WH-1000XM6"], "proto": "v2", "fallback_img": "headphones"},
+    {"key": "wh-1000xm5", "name": "WH-1000XM5", "match": ["WH-1000XM5"], "proto": "v2"},
+    {"key": "wh-1000xm4", "name": "WH-1000XM4", "match": ["WH-1000XM4"], "proto": "v1"},
+    {"key": "wh-ult900n", "name": "WH-ULT900N", "match": ["WH-ULT900N", "ULT WEAR"], "proto": "v2"},
 ]
 NAME = DEVICES[0]["name"]  # domyślne, zanim cokolwiek się połączy
 BATT_KEY = "{104EA319-6EE2-4701-BD47-8DDBF425BBE5} 2"  # DEVPKEY battery level (HFP)
@@ -182,21 +185,24 @@ class Controller:
         self.addr = None
         self._lock = threading.Lock()
 
-    def start(self, addr, delay=4.0, retries=3):
+    def start(self, addr, delay=4.0, retries=3, proto="v2"):
         self.addr = addr
+        self.proto = proto
         threading.Thread(target=self._run, args=(delay, retries), daemon=True, name="mdr-connect").start()
 
     def _run(self, delay, retries):
         import time
         time.sleep(delay)  # profil A2DP/HFP musi się najpierw zestawić
-        log.info("Sterowanie: łączę z %012X", self.addr)
+        log.info("Sterowanie: łączę z %012X (MDR %s)", self.addr, self.proto)
         for attempt in range(retries):
             with self._lock:
                 if self.mdr and self.mdr.connected:
                     return
-                mdr = sony_mdr.SonyMDR(lambda: sony_mdr.rfcomm_connect(self.addr),
+                uuid = sony_mdr.SERVICE_UUID_V1 if self.proto == "v1" else sony_mdr.SERVICE_UUID
+                mdr = sony_mdr.SonyMDR(lambda: sony_mdr.rfcomm_connect(self.addr, uuid),
                                        on_state=self.bridge.nc_state.emit,
-                                       on_disconnect=lambda: self.bridge.nc_available.emit(False))
+                                       on_disconnect=lambda: self.bridge.nc_available.emit(False),
+                                       proto=self.proto)
                 try:
                     mdr.connect()
                     self.mdr = mdr
@@ -956,11 +962,11 @@ def main():
     def on_connected(addr, key):
         select_device(key)
         QTimer.singleShot(3000, fetch_battery)
-        ctrl.start(addr)
+        ctrl.start(addr, proto=current["dev"]["proto"])
 
     def on_already(addr, key):
         select_device(key)
-        ctrl.start(addr, delay=0.5)
+        ctrl.start(addr, delay=0.5, proto=current["dev"]["proto"])
 
     def on_disconnected(key):
         if key == current["dev"]["key"]:

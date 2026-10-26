@@ -1,5 +1,6 @@
 """
-Minimalny klient protokołu Sony MDR v2 (Sound Connect) dla WH-1000XM6: tylko NC/ASM.
+Minimalny klient protokołu Sony MDR (Sound Connect): tylko NC/ASM.
+v2 (WH-1000XM5/XM6, WH-ULT900N) i v1 (WH-1000XM4).
 Format pakietów i komendy na podstawie mos9527/SonyHeadphonesClient (MIT), libmdr:
   ramka:   0x3E  escape( type | seq | len:int32BE | payload | checksum )  0x3C
   escape:  0x3C/0x3D/0x3E -> 0x3D 0x2C/0x2D/0x2E
@@ -13,7 +14,8 @@ import time
 
 log = logging.getLogger("sony_mdr")
 
-SERVICE_UUID = "956C7B26-D49A-4BA8-B03F-B17D393CB6E2"  # XM5 i nowsze
+SERVICE_UUID = "956C7B26-D49A-4BA8-B03F-B17D393CB6E2"  # MDR v2: XM5 i nowsze
+SERVICE_UUID_V1 = "96CC203E-5068-46AD-B32D-E316F5E069BA"  # MDR v1: XM4, XM3 i starsze
 
 DATA_MDR, ACK = 0x0C, 0x01
 START, END, ESC = 0x3E, 0x3C, 0x3D
@@ -22,6 +24,7 @@ CONNECT_GET_PROTOCOL_INFO, CONNECT_RET_PROTOCOL_INFO = 0x00, 0x01
 NCASM_GET_PARAM, NCASM_RET_PARAM, NCASM_SET_PARAM, NCASM_NTFY_PARAM = 0x66, 0x67, 0x68, 0x69
 NC_DUAL_SEAMLESS = 0x17        # MODE_NC_ASM_DUAL_NC_MODE_SWITCH_AND_ASM_SEAMLESS
 NC_DUAL_SEAMLESS_NA = 0x19     # ...z noise adaptation (auto ambient) — XM6
+V1_NC_ASM = 0x02               # MDR v1: NOISE_CANCELLING_AND_AMBIENT_SOUND_MODE
 
 MODE_NC, MODE_AMBIENT, MODE_OFF = "nc", "ambient", "off"
 
@@ -106,15 +109,16 @@ class SonyMDR:
     Wszystkie callbacki wołane z wątku czytającego.
     """
 
-    def __init__(self, sock_factory, on_state=None, on_disconnect=None):
+    def __init__(self, sock_factory, on_state=None, on_disconnect=None, proto="v2"):
         self._factory = sock_factory
+        self.proto = proto
         self.on_state = on_state or (lambda s: None)
         self.on_disconnect = on_disconnect or (lambda: None)
         self.sock = None
         self.seq = 0
         self.variant = None
         self.state = {"mode": None, "level": 10, "voice": False,
-                      "auto": 0, "sens": 0, "nc_mode": 0}
+                      "auto": 0, "sens": 0, "nc_mode": 0, "v1_nc_type": 0x02}
         self._ack = threading.Event()
         self._proto = threading.Event()
         self._nc = threading.Event()
@@ -129,7 +133,8 @@ class SonyMDR:
         self._send(bytes((CONNECT_GET_PROTOCOL_INFO, 0x00)))
         if not self._proto.wait(4):
             raise TimeoutError("Brak CONNECT_RET_PROTOCOL_INFO")
-        for variant in (NC_DUAL_SEAMLESS_NA, NC_DUAL_SEAMLESS):
+        variants = (V1_NC_ASM,) if self.proto == "v1" else (NC_DUAL_SEAMLESS_NA, NC_DUAL_SEAMLESS)
+        for variant in variants:
             self._nc.clear()
             self._send(bytes((NCASM_GET_PARAM, variant)))
             if self._nc.wait(2):
@@ -159,6 +164,16 @@ class SonyMDR:
         if mode in (MODE_NC, MODE_AMBIENT):
             st["nc_mode"] = 0 if mode == MODE_NC else 1
         effect = 0 if mode == MODE_OFF else 1
+        if self.proto == "v1":
+            # v1 (XM4): NC = ncValue DUAL + asmValue 0; otoczenie = ncValue OFF + asmValue = poziom
+            nc = st["nc_mode"] == 0
+            payload = bytes((NCASM_SET_PARAM, V1_NC_ASM, effect, st["v1_nc_type"],
+                             0x02 if nc else 0x00, 0x01, 1 if st["voice"] else 0,
+                             0 if nc else max(1, st["level"])))
+            self._send(payload)
+            st["mode"] = mode
+            self.on_state(dict(st))
+            return
         variant = self.variant or NC_DUAL_SEAMLESS
         payload = bytes((NCASM_SET_PARAM, variant, 0x01, effect, st["nc_mode"],
                          1 if st["voice"] else 0, st["level"]))
@@ -232,6 +247,19 @@ class SonyMDR:
         cmd = payload[0]
         if cmd == CONNECT_RET_PROTOCOL_INFO:
             self._proto.set()
+        elif self.proto == "v1" and cmd in (NCASM_RET_PARAM, NCASM_NTFY_PARAM) and len(payload) >= 8 \
+                and payload[1] == V1_NC_ASM:
+            # [cmd, type, effect, ncType, ncValue, asmType, asmId, asmValue]
+            _, variant, effect, nc_type, nc_value, _asm_type, asm_id, asm_value = payload[:8]
+            self.variant = variant
+            st = self.state
+            nc = nc_value != 0
+            st.update(v1_nc_type=nc_type, nc_mode=0 if nc else 1, voice=bool(asm_id),
+                      mode=MODE_OFF if effect == 0 else (MODE_NC if nc else MODE_AMBIENT))
+            if not nc and asm_value:
+                st["level"] = asm_value
+            self._nc.set()
+            self.on_state(dict(st))
         elif cmd in (NCASM_RET_PARAM, NCASM_NTFY_PARAM) and len(payload) >= 7 \
                 and payload[1] in (NC_DUAL_SEAMLESS, NC_DUAL_SEAMLESS_NA):
             _, variant, _status, effect, nc_mode, amb_mode, level = payload[:7]
