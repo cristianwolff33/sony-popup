@@ -7,6 +7,11 @@ final class IslandPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
+/// Hosting SwiftUI, który przyjmuje pierwsze kliknięcie (bez wcześniejszego "aktywowania" okna).
+final class ClickThroughHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 /// Przezroczysty panel nad notchem. Zwinięty = czarny kształt notcha (niewidoczny),
 /// po najechaniu kursorem na notch rozwija się w wyspę.
 final class NotchController {
@@ -41,7 +46,7 @@ final class NotchController {
         panel.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.mainMenuWindow)) + 3)
         panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
 
-        let host = NSHostingView(rootView: IslandView(model: model))
+        let host = ClickThroughHostingView(rootView: IslandView(model: model))
         host.wantsLayer = true
         host.layer?.backgroundColor = .clear
         panel.contentView = host

@@ -322,6 +322,7 @@ final class MDRClient: NSObject, IOBluetoothRFCOMMChannelDelegate {
 
     private func transmit() {
         guard let p = inflight else { return }
+        Log.info("MDR TX \(hex(p))\(retries > 0 ? " (ponowienie \(retries))" : "")")
         write(MDRFrame.pack(type: Self.DATA_MDR, seq: seq, payload: p))
         ackTimer?.invalidate()
         ackTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: false) { [weak self] _ in
@@ -341,7 +342,7 @@ final class MDRClient: NSObject, IOBluetoothRFCOMMChannelDelegate {
     }
 
     private func write(_ bytes: [UInt8]) {
-        guard let ch = channel else { return }
+        guard let ch = channel else { Log.info("MDR: zapis bez otwartego kanału"); return }
         var buf = bytes
         let r = buf.withUnsafeMutableBytes { ptr -> IOReturn in
             ch.writeSync(ptr.baseAddress, length: UInt16(ptr.count))
@@ -413,6 +414,7 @@ final class MDRClient: NSObject, IOBluetoothRFCOMMChannelDelegate {
             write(MDRFrame.pack(type: Self.ACK, seq: 1 &- sq, payload: []))
         }
         guard type == Self.DATA_MDR, let cmd = p.first else { return }
+        Log.info("MDR RX \(hex(p))")
 
         switch cmd {
         case 0x01:   // CONNECT_RET_PROTOCOL_INFO

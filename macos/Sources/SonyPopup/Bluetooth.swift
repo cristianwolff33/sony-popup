@@ -123,11 +123,19 @@ final class BluetoothController: NSObject {
     }
 
     func setMode(_ mode: SoundMode, level: Int?) {
+        Log.info("UI: tryb \(mode.rawValue)\(level.map { " poziom \($0)" } ?? "")" + (client == nil ? " — BRAK połączenia sterującego" : ""))
         client?.setMode(mode, level: level)
     }
 
-    func setEQPreset(_ id: UInt8) { client?.setEQPreset(id) }
-    func setClearBass(_ v: Int) { client?.setClearBass(v) }
+    func setEQPreset(_ id: UInt8) {
+        Log.info(String(format: "UI: EQ preset 0x%02x", id) + (client == nil ? " — BRAK połączenia sterującego" : ""))
+        client?.setEQPreset(id)
+    }
+
+    func setClearBass(_ v: Int) {
+        Log.info("UI: Clear Bass \(v)" + (client == nil ? " — BRAK połączenia sterującego" : ""))
+        client?.setClearBass(v)
+    }
 
     func refreshBattery() {
         client?.requestBattery()
