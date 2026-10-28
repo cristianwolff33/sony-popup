@@ -10,7 +10,18 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF_NAME#v}"; else v="0.0.${GITHUB_RUN_NUMBER}"; fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+  windows:
+    needs: version
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -36,20 +47,12 @@ jobs:
             sony_popup.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Version
-        id: ver
-        shell: pwsh
-        run: |
-          if ("${{ github.ref }}" -like "refs/tags/v*") { $v = "${{ github.ref_name }}".TrimStart("v") }
-          else { $v = "0.0.${{ github.run_number }}" }
-          "version=$v" >> $env:GITHUB_OUTPUT
-
       - name: Build installer (Inno Setup)
         shell: pwsh
         run: |
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
-          & $iscc /DMyAppVersion=${{ steps.ver.outputs.version }} installer.iss
+          & $iscc /DMyAppVersion=${{ needs.version.outputs.version }} installer.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Zip portable
@@ -57,15 +60,37 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: SonyPopup-${{ steps.ver.outputs.version }}
+          name: windows
           path: |
             Output/SonyPopup-Setup.exe
             SonyPopup-win-x64-portable.zip
 
-      - name: Release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+  macos:
+    needs: version
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build app + DMG
+        run: bash ./macos/build_app.sh "${{ needs.version.outputs.version }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: macos/build/SonyPopup-macOS.dmg
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - uses: softprops/action-gh-release@v2
         with:
           files: |
-            Output/SonyPopup-Setup.exe
-            SonyPopup-win-x64-portable.zip
+            dist/windows/Output/SonyPopup-Setup.exe
+            dist/windows/SonyPopup-win-x64-portable.zip
+            dist/macos/SonyPopup-macOS.dmg

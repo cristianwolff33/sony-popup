@@ -54,6 +54,35 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 Nazwa pliku = klucz modelu z listy `DEVICES` w `sony_popup.py`. Nowy model: dopisz go do `DEVICES`
 i wrzuć `<klucz>.png`.
 
+## macOS (MacBook z notchem)
+
+Natywna aplikacja w Swifcie (`macos/`). Najedź kursorem na notch — rozwija się z niego wyspa
+w stylu Dynamic Island: zdjęcie i bateria słuchawek, tryb ANC / otoczenie, odtwarzacz.
+Po połączeniu słuchawek wyspa pokazuje się sama. Na Macach bez notcha działa środek paska menu.
+W pasku menu jest ikona słuchawek z baterią (tryb dźwięku, autostart, log).
+
+**Instalacja:** pobierz `SonyPopup-macOS.dmg` z [Releases](../../releases), przeciągnij
+*Sony Popup* do *Aplikacji*. Aplikacja nie jest podpisana przez Apple, więc przy pierwszym
+uruchomieniu:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Sony Popup.app"
+```
+
+albo *Ustawienia systemowe → Prywatność i ochrona → Otwórz mimo to*.
+
+Uprawnienia, o które zapyta: **Bluetooth** (wymagane), **Automatyzacja** Spotify/Muzyka (tytuł utworu),
+**Dostępność** (klawisze multimedialne dla innych odtwarzaczy, np. YouTube).
+
+**Ze źródeł** (Xcode albo `xcode-select --install`):
+
+```bash
+./macos/build_app.sh        # → macos/build/Sony Popup.app + SonyPopup-macOS.dmg
+```
+
+Bateria i tryby na macOS idą przez protokół Sony MDR (RFCOMM), więc bez połączenia sterującego
+nie będzie też poziomu baterii. Log: `~/Library/Logs/SonyPopup.log`.
+
 ## Jak to działa
 
 | Element | Źródło |

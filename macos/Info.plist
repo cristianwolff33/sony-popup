@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>                 <string>Sony Popup</string>
+    <key>CFBundleDisplayName</key>          <string>Sony Popup</string>
+    <key>CFBundleIdentifier</key>           <string>com.cristianwolff33.sonypopup</string>
+    <key>CFBundleExecutable</key>           <string>SonyPopup</string>
+    <key>CFBundlePackageType</key>          <string>APPL</string>
+    <key>CFBundleIconFile</key>             <string>AppIcon</string>
+    <key>CFBundleShortVersionString</key>   <string>__VERSION__</string>
+    <key>CFBundleVersion</key>              <string>__VERSION__</string>
+    <key>LSMinimumSystemVersion</key>       <string>13.0</string>
+    <key>LSUIElement</key>                  <true/>
+    <key>NSHighResolutionCapable</key>      <true/>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>Sony Popup łączy się ze słuchawkami Sony, żeby pokazać baterię i przełączać tryb redukcji szumów.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Sony Popup pokazuje aktualny utwór i steruje odtwarzaniem w Spotify i Muzyce.</string>
+</dict>
+</plist>
