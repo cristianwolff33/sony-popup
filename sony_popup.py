@@ -18,7 +18,7 @@ from pathlib import Path
 from PySide6.QtCore import QEasingCurve, QRectF, QSize, QObject, QPoint, QPropertyAnimation, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QIcon, QImage, QLinearGradient, QPainter, QPen, QPixmap
 from PySide6.QtGui import QActionGroup
-from PySide6.QtWidgets import (QApplication, QButtonGroup, QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QMenu,
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QComboBox, QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QMenu,
                                QProgressBar, QPushButton, QSlider, QSystemTrayIcon, QVBoxLayout, QWidget)
 from winrt.windows.devices.bluetooth import BluetoothConnectionStatus, BluetoothDevice
 from winrt.windows.devices.enumeration import DeviceInformation
@@ -38,7 +38,9 @@ MODES = [(MODE_NC, "Redukcja szumów"), (MODE_AMBIENT, "Otoczenie"), (MODE_OFF, 
 # Obsługiwane słuchawki: dopasowanie po nazwie Bluetooth; zdjęcie <key>.png obok skryptu/exe
 # proto: wersja protokołu Sony MDR do sterowania ANC (v2 = XM5 i nowsze, v1 = XM4 i starsze)
 DEVICES = [
-    {"key": "wh-1000xm6", "name": "WH-1000XM6", "match": ["WH-1000XM6"], "proto": "v2", "fallback_img": "headphones"},
+    # XM6 (FW 3.x) przyjmuje tylko część presetów EQ — wg SonyHeadphonesClient
+    {"key": "wh-1000xm6", "name": "WH-1000XM6", "match": ["WH-1000XM6"], "proto": "v2", "fallback_img": "headphones",
+     "eq_allowed": [0x00, 0x30, 0x31, 0x32, 0x33, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5]},
     {"key": "wh-1000xm5", "name": "WH-1000XM5", "match": ["WH-1000XM5"], "proto": "v2"},
     {"key": "wh-1000xm4", "name": "WH-1000XM4", "match": ["WH-1000XM4"], "proto": "v1"},
     {"key": "wh-ult900n", "name": "WH-ULT900N", "match": ["WH-ULT900N", "ULT WEAR"], "proto": "v2"},
@@ -173,6 +175,7 @@ class Bridge(QObject):
     media = Signal(object)
     toggle = Signal()
     nc_state = Signal(dict)
+    eq_state = Signal(dict)
     nc_available = Signal(bool)
 
 
@@ -185,9 +188,10 @@ class Controller:
         self.addr = None
         self._lock = threading.Lock()
 
-    def start(self, addr, delay=4.0, retries=3, proto="v2"):
+    def start(self, addr, delay=4.0, retries=3, proto="v2", eq_allowed=None):
         self.addr = addr
         self.proto = proto
+        self.eq_allowed = eq_allowed
         threading.Thread(target=self._run, args=(delay, retries), daemon=True, name="mdr-connect").start()
 
     def _run(self, delay, retries):
@@ -202,7 +206,8 @@ class Controller:
                 mdr = sony_mdr.SonyMDR(lambda: sony_mdr.rfcomm_connect(self.addr, uuid),
                                        on_state=self.bridge.nc_state.emit,
                                        on_disconnect=lambda: self.bridge.nc_available.emit(False),
-                                       proto=self.proto)
+                                       proto=self.proto, on_eq=self.bridge.eq_state.emit,
+                                       eq_allowed=self.eq_allowed)
                 try:
                     mdr.connect()
                     self.mdr = mdr
@@ -220,6 +225,24 @@ class Controller:
                 self.mdr.close()
             self.mdr = None
         self.bridge.nc_available.emit(False)
+
+    def _job(self, fn, *args):
+        mdr = self.mdr
+        if not (mdr and mdr.connected):
+            return
+
+        def run():
+            try:
+                getattr(mdr, fn)(*args)
+            except Exception:
+                log.exception(fn)
+        threading.Thread(target=run, daemon=True).start()
+
+    def set_eq_preset(self, pid):
+        self._job("set_eq_preset", pid)
+
+    def set_clear_bass(self, value):
+        self._job("set_clear_bass", value)
 
     def set_mode(self, mode, level=None):
         mdr = self.mdr
@@ -602,6 +625,8 @@ class BatteryBar(QWidget):
 class Popup(QWidget):
     W, H = 380, 500
     mode_requested = Signal(str, object)  # (tryb, poziom otoczenia albo None)
+    eq_preset_requested = Signal(int)
+    clear_bass_requested = Signal(int)
 
     def __init__(self):
         super().__init__(None, Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint)
@@ -626,8 +651,16 @@ class Popup(QWidget):
             QSlider::groove:horizontal { height: 6px; background: #3a3a3c; border-radius: 3px; }
             QSlider::sub-page:horizontal { background: #0a84ff; border-radius: 3px; }
             QSlider::handle:horizontal { background: white; width: 18px; margin: -6px 0; border-radius: 9px; }
+            QComboBox { background: rgba(255,255,255,0.09); color: white; border: none; border-radius: 12px;
+                        padding: 7px 12px; font-size: 12px; }
+            QComboBox:hover { background: rgba(255,255,255,0.15); }
+            QComboBox::drop-down { border: none; width: 22px; }
+            QComboBox QAbstractItemView { background: #2c2c2e; color: white; border: none; outline: none;
+                                          selection-background-color: #0a84ff; padding: 4px; }
         """)
+        self.card = card
         lay = QVBoxLayout(card)
+        self.lay = lay
         lay.setContentsMargins(28, 18, 28, 20)
         lay.setSpacing(10)
 
@@ -676,6 +709,37 @@ class Popup(QWidget):
         self.nc_lbl.setFont(QFont("Segoe UI", 9))
         self.nc_lbl.setStyleSheet("color: #8e8e93;")
 
+        # --- equalizer ---
+        self.eq_row = QWidget()
+        eq_lay = QHBoxLayout(self.eq_row)
+        eq_lay.setContentsMargins(4, 2, 0, 0)
+        eq_lbl = QLabel("Equalizer")
+        eq_lbl.setFont(QFont("Segoe UI", 10))
+        self.eq_combo = QComboBox()
+        self.eq_combo.setCursor(Qt.PointingHandCursor)
+        self.eq_combo.activated.connect(lambda i: self.eq_preset_requested.emit(int(self.eq_combo.itemData(i))))
+        eq_lay.addWidget(eq_lbl)
+        eq_lay.addWidget(self.eq_combo, 1)
+        self.eq_row.setVisible(False)
+
+        self.cb_row = QWidget()
+        cb_lay = QHBoxLayout(self.cb_row)
+        cb_lay.setContentsMargins(4, 0, 4, 0)
+        cb_lbl = QLabel("Clear Bass")
+        cb_lbl.setFont(QFont("Segoe UI", 10))
+        self.cb = QSlider(Qt.Horizontal)
+        self.cb.setRange(-10, 10)
+        self.cb_val = QLabel("0")
+        self.cb_val.setFixedWidth(26)
+        self.cb_val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.cb_val.setFont(QFont("Segoe UI", 10, QFont.DemiBold))
+        self.cb.valueChanged.connect(lambda v: self.cb_val.setText(f"{v:+d}" if v else "0"))
+        self.cb.sliderReleased.connect(lambda: self.clear_bass_requested.emit(self.cb.value()))
+        cb_lay.addWidget(cb_lbl)
+        cb_lay.addWidget(self.cb, 1)
+        cb_lay.addWidget(self.cb_val)
+        self.cb_row.setVisible(False)
+
         # --- odtwarzacz ---
         self.track_lbl = QLabel("")
         self.track_lbl.setAlignment(Qt.AlignCenter)
@@ -702,8 +766,9 @@ class Popup(QWidget):
         btn.clicked.connect(self.slide_out)
 
         for w in (title, img, self.batt_lbl, self.bar, seg, self.amb_row, self.nc_lbl,
-                  self.track_lbl, player, btn):
+                  self.eq_row, self.cb_row, self.track_lbl, player, btn):
             lay.addWidget(w)
+        self._relayout()
 
         self.anim = QPropertyAnimation(self, b"pos", self)
         self.anim.setDuration(380)
@@ -711,6 +776,34 @@ class Popup(QWidget):
         self.anim.finished.connect(self._after_anim)
         self.timer = QTimer(self, singleShot=True, interval=8000, timeout=self.slide_out)
         self._hiding = False
+
+    def _relayout(self):
+        """Wysokość karty dopasowana do widocznych sekcji (tryb otoczenia, EQ)."""
+        self.H = self.lay.sizeHint().height()
+        self.setFixedSize(self.W, self.H)
+        self.card.setGeometry(0, 0, self.W, self.H)
+        if self.isVisible() and not self._hiding and self.anim.state() != QPropertyAnimation.Running:
+            self.move(self._targets()[0])
+
+    def set_eq(self, eq):
+        presets = eq.get("presets") or []
+        self.eq_combo.blockSignals(True)
+        self.eq_combo.clear()
+        for pid, name in presets:
+            self.eq_combo.addItem(name, pid)
+        cur = eq.get("preset")
+        idx = self.eq_combo.findData(cur) if cur is not None else -1
+        if idx < 0 and cur is not None:
+            self.eq_combo.addItem(sony_mdr.eq_name(cur), cur)
+            idx = self.eq_combo.count() - 1
+        self.eq_combo.setCurrentIndex(idx)
+        self.eq_combo.blockSignals(False)
+        self.eq_row.setVisible(bool(eq.get("available") and presets))
+        cb = eq.get("clear_bass")
+        self.cb_row.setVisible(bool(eq.get("available")) and cb is not None)
+        if cb is not None and not self.cb.isSliderDown():
+            self.cb.setValue(cb)
+        self._relayout()
 
     def set_device(self, key):
         d = next((d for d in DEVICES if d["key"] == key), DEVICES[0])
@@ -794,12 +887,19 @@ class Popup(QWidget):
         self.amb.setEnabled(ok)
         self.nc_lbl.setText("" if ok else "Sterowanie niedostępne")
         self.nc_lbl.setVisible(not ok)
+        if not ok:
+            self.eq_row.setVisible(False)
+            self.cb_row.setVisible(False)
+        self._relayout()
 
     def set_nc_state(self, st):
         mode = st.get("mode")
         if mode in dict(MODES):
             self.seg.set_current(mode)
-        self.amb_row.setVisible(mode == MODE_AMBIENT)
+        vis = mode == MODE_AMBIENT
+        if self.amb_row.isVisible() != vis:
+            self.amb_row.setVisible(vis)
+            self._relayout()
         if not self.amb.isSliderDown():
             self.amb.setValue(st.get("level") or 1)
 
@@ -955,6 +1055,9 @@ def main():
 
     ctrl = Controller(bridge)
     popup.mode_requested.connect(ctrl.set_mode)
+    popup.eq_preset_requested.connect(ctrl.set_eq_preset)
+    popup.clear_bass_requested.connect(ctrl.set_clear_bass)
+    bridge.eq_state.connect(popup.set_eq)
     bridge.nc_state.connect(popup.set_nc_state)
     bridge.nc_available.connect(popup.set_nc_available)
 
@@ -962,11 +1065,11 @@ def main():
     def on_connected(addr, key):
         select_device(key)
         QTimer.singleShot(3000, fetch_battery)
-        ctrl.start(addr, proto=current["dev"]["proto"])
+        ctrl.start(addr, proto=current["dev"]["proto"], eq_allowed=current["dev"].get("eq_allowed"))
 
     def on_already(addr, key):
         select_device(key)
-        ctrl.start(addr, delay=0.5, proto=current["dev"]["proto"])
+        ctrl.start(addr, delay=0.5, proto=current["dev"]["proto"], eq_allowed=current["dev"].get("eq_allowed"))
 
     def on_disconnected(key):
         if key == current["dev"]["key"]:
@@ -1019,6 +1122,22 @@ def main():
     mode_menu.setEnabled(False)
     bridge.nc_available.connect(mode_menu.setEnabled)
     bridge.nc_state.connect(lambda st: st.get("mode") in mode_actions and mode_actions[st["mode"]].setChecked(True))
+    eq_menu = menu.addMenu("Equalizer")
+    eq_menu.setEnabled(False)
+
+    def update_eq_menu(eq):
+        eq_menu.clear()
+        group = QActionGroup(eq_menu)
+        for pid, name in eq.get("presets") or []:
+            a = eq_menu.addAction(name)
+            a.setCheckable(True)
+            a.setActionGroup(group)
+            a.setChecked(pid == eq.get("preset"))
+            a.triggered.connect(lambda _=False, p=pid: ctrl.set_eq_preset(p))
+        eq_menu.setEnabled(bool(eq.get("available") and eq.get("presets")))
+
+    bridge.eq_state.connect(update_eq_menu)
+    bridge.nc_available.connect(lambda ok: ok or eq_menu.setEnabled(False))
     menu.addSeparator()
     menu.addAction("Zamknij", app.quit)
     tray.setContextMenu(menu)

@@ -35,6 +35,35 @@ struct NCState: Equatable {
     var v1NcType: UInt8 = 0x02
 }
 
+/// Stan equalizera. bands: −10…10 (5 pasm przy Clear Bass, 10 bez); clearBass nil = model bez Clear Bass.
+struct EQPreset: Equatable, Identifiable {
+    let id: UInt8
+    let name: String
+}
+
+struct EQState: Equatable {
+    var available = false
+    var preset: UInt8? = nil
+    var presets: [EQPreset] = []
+    var clearBass: Int? = nil
+    var bands: [Int] = []
+}
+
+enum EQNames {
+    static let names: [UInt8: String] = [
+        0x00: "Wyłączony", 0x01: "Rock", 0x02: "Pop", 0x03: "Jazz", 0x04: "Dance", 0x05: "EDM",
+        0x06: "R&B/Hip-Hop", 0x07: "Acoustic",
+        0x10: "Bright", 0x11: "Excited", 0x12: "Mellow", 0x13: "Relaxed", 0x14: "Vocal",
+        0x15: "Treble Boost", 0x16: "Bass Boost", 0x17: "Speech",
+        0x30: "Heavy", 0x31: "Clear", 0x32: "Hard", 0x33: "Soft",
+        0xA0: "Własny", 0xA1: "Użytkownika 1", 0xA2: "Użytkownika 2", 0xA3: "Użytkownika 3",
+        0xA4: "Użytkownika 4", 0xA5: "Użytkownika 5",
+    ]
+    static func name(_ id: UInt8, device: String = "") -> String {
+        names[id] ?? (device.isEmpty ? String(format: "Preset 0x%02X", id) : device)
+    }
+}
+
 enum MDRFrame {
     static let start: UInt8 = 0x3E, end: UInt8 = 0x3C, esc: UInt8 = 0x3D
 
@@ -101,6 +130,9 @@ final class MDRClient: NSObject, IOBluetoothRFCOMMChannelDelegate {
 
     let proto: MDRProto
     private(set) var state = NCState()
+    private(set) var eq = EQState()
+    var eqAllowed: Set<UInt8>? = nil          // np. XM6 przyjmuje tylko część presetów
+    var onEQ: ((EQState) -> Void)?
     private(set) var variant: UInt8?
 
     var onState: ((NCState) -> Void)?
@@ -190,6 +222,88 @@ final class MDRClient: NSObject, IOBluetoothRFCOMMChannelDelegate {
         }
         state.mode = mode
         onState?(state)
+    }
+
+    // MARK: equalizer
+
+    private static let EQ_GET_CAP: UInt8 = 0x50, EQ_RET_CAP: UInt8 = 0x51, EQ_GET_PARAM: UInt8 = 0x56
+    private static let EQ_RET_PARAM: UInt8 = 0x57, EQ_SET_PARAM: UInt8 = 0x58, EQ_NTFY_PARAM: UInt8 = 0x59
+    private var eqType: UInt8 { proto == .v1 ? 0x01 : 0x00 }   // PRESET_EQ
+
+    func requestEQ() {
+        if proto == .v2 {
+            send([Self.EQ_GET_CAP, 0x00, 0x01])    // zwykły EQ
+            send([Self.EQ_GET_CAP, 0x03, 0x01])    // EQ + tryb ULT (WH-ULT900N)
+        } else {
+            send([Self.EQ_GET_CAP, eqType, 0x01])
+        }
+        send([Self.EQ_GET_PARAM, eqType])
+    }
+
+    func setEQPreset(_ id: UInt8) {
+        send([Self.EQ_SET_PARAM, eqType, id, 0x00])
+        eq.preset = id
+        onEQ?(eq)
+        send([Self.EQ_GET_PARAM, eqType])          // słuchawki odeślą pasma nowego presetu
+    }
+
+    func setClearBass(_ value: Int) {
+        guard eq.clearBass != nil else { return }
+        let v = max(-10, min(10, value))
+        var bands = Array((eq.bands + Array(repeating: 0, count: 5)).prefix(5))
+        bands = bands.map { max(-10, min(10, $0)) }
+        let steps = [UInt8(v + 10)] + bands.map { UInt8($0 + 10) }
+        // v1 gubi ramkę z presetem i pasmami naraz → preset "nieokreślony"
+        let preset: UInt8 = proto == .v1 ? 0xFF : (eq.preset ?? 0xA0)
+        send([Self.EQ_SET_PARAM, eqType, preset, UInt8(steps.count)] + steps)
+        eq.clearBass = v
+        onEQ?(eq)
+        send([Self.EQ_GET_PARAM, eqType])
+    }
+
+    private func parseEQ(_ p: [UInt8]) {
+        let cmd = p[0]
+        if cmd == Self.EQ_RET_CAP, p.count >= 5 {
+            // [cmd, type, band, step, (ult2 step), count, (id, len, name)*]
+            var i = (proto == .v2 && p[1] == 0x03) ? 5 : 4
+            guard i < p.count else { return }
+            let count = Int(p[i]); i += 1
+            var list: [EQPreset] = []
+            for _ in 0..<count {
+                guard i < p.count else { break }
+                let id = p[i]
+                let n = i + 1 < p.count ? Int(p[i + 1]) : 0
+                let end = min(p.count, i + 2 + n)
+                let raw = i + 2 <= end ? Array(p[(i + 2)..<end]) : []
+                list.append(EQPreset(id: id, name: EQNames.name(id, device: String(decoding: raw, as: UTF8.self))))
+                i += 2 + n
+            }
+            if let allowed = eqAllowed { list = list.filter { allowed.contains($0.id) } }
+            if !list.isEmpty {
+                eq.presets = list
+                eq.available = true
+                onEQ?(eq)
+            }
+        } else if cmd == Self.EQ_RET_PARAM || cmd == Self.EQ_NTFY_PARAM, p.count >= 4, p[1] == eqType {
+            // [cmd, type, preset, n, steps...]
+            let id = p[2], n = Int(p[3])
+            let steps = Array(p.dropFirst(4).prefix(n)).map { Int($0) }
+            if id != 0xFF { eq.preset = id }
+            if steps.count == 6 {
+                eq.clearBass = steps[0] - 10
+                eq.bands = steps.dropFirst().map { $0 - 10 }
+            } else if steps.count == 10 {
+                eq.clearBass = nil
+                eq.bands = steps.map { $0 - 6 }
+            }
+            eq.available = true
+            if eq.presets.isEmpty {
+                let ids: [UInt8] = [0x00, 0x16, 0x15, 0x14, 0x13, 0x12, 0x11, 0x10, 0x17, 0xA0]
+                eq.presets = ids.filter { eqAllowed?.contains($0) ?? true }
+                    .map { EQPreset(id: $0, name: EQNames.name($0)) }
+            }
+            onEQ?(eq)
+        }
     }
 
     // MARK: wysyłanie z ACK
@@ -311,6 +425,8 @@ final class MDRClient: NSObject, IOBluetoothRFCOMMChannelDelegate {
             }
         case Self.NCASM_RET, Self.NCASM_NTFY:
             parseNC(p)
+        case Self.EQ_RET_CAP, Self.EQ_RET_PARAM, Self.EQ_NTFY_PARAM:
+            parseEQ(p)
         case 0x23, 0x25:   // v2 POWER_RET/NTFY_STATUS
             if proto == .v2, p.count >= 3, p[1] == 0x00 || p[1] == 0x08 {
                 onBattery?(Int(p[2]), p.count > 3 && p[3] == 0x01)
@@ -366,6 +482,7 @@ final class MDRClient: NSObject, IOBluetoothRFCOMMChannelDelegate {
             probeVariants = []
             Log.info(String(format: "MDR: gotowy, wariant NC/ASM 0x%02x", variant ?? 0))
             onReady?(true)
+            requestEQ()
         }
         onState?(state)
     }

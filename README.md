@@ -18,6 +18,7 @@ Nowy model: dopisz go do `DEVICES` w `sony_popup.py` (nazwa Bluetooth, protokó�
 
 - popup z poziomem baterii po podłączeniu słuchawek
 - przełączanie trybu: **redukcja szumów / otoczenie (z poziomem) / wyłączone**, synchronizowane z przyciskiem na słuchawkach
+- **equalizer**: presety (Bass Boost, Vocal, Heavy…) + suwak **Clear Bass** −10…+10, także w menu traya
 - sterowanie odtwarzaniem (poprzedni / play-pauza / następny) + tytuł aktualnego utworu
 - ikona w trayu z kolorową kropką baterii
 - globalny skrót `Ctrl+Alt+Shift+H` (pokaż/schowaj) — działa np. z Action Ring w Logi Options+

@@ -22,11 +22,17 @@ final class AppModel: ObservableObject {
     @Published var ncAvailable = false
     @Published var ncConnecting = false
     @Published var nc = NCState()
+    @Published var eq = EQState()
 
     @Published var nowPlaying: NowPlaying? = nil
     @Published var mediaAvailable = true
 
     // akcje z UI
     var requestMode: ((SoundMode, Int?) -> Void)?
+    var requestEQPreset: ((UInt8) -> Void)?
+    var requestClearBass: ((Int) -> Void)?
+
+    /// Zmierzona wysokość treści wyspy pod notchem (ustawia ją IslandView) — używana też do wykrywania kursora.
+    @Published var islandContentHeight: CGFloat = 220
     var mediaCommand: ((MediaCommand) -> Void)?
 }

@@ -28,6 +28,25 @@ V1_NC_ASM = 0x02               # MDR v1: NOISE_CANCELLING_AND_AMBIENT_SOUND_MODE
 
 MODE_NC, MODE_AMBIENT, MODE_OFF = "nc", "ambient", "off"
 
+# ---------- equalizer (EQEBB) ----------
+EQ_GET_CAP, EQ_RET_CAP, EQ_GET_PARAM, EQ_RET_PARAM, EQ_SET_PARAM, EQ_NTFY_PARAM = 0x50, 0x51, 0x56, 0x57, 0x58, 0x59
+EQ_TYPE = {"v2": 0x00, "v1": 0x01}          # PRESET_EQ (v1 i v2 mają różne numery)
+EQ_UNSPECIFIED = 0xFF                       # v1: "brak presetu" przy wysyłaniu pasm
+
+EQ_NAMES = {
+    0x00: "Wyłączony", 0x01: "Rock", 0x02: "Pop", 0x03: "Jazz", 0x04: "Dance", 0x05: "EDM",
+    0x06: "R&B/Hip-Hop", 0x07: "Acoustic",
+    0x10: "Bright", 0x11: "Excited", 0x12: "Mellow", 0x13: "Relaxed", 0x14: "Vocal",
+    0x15: "Treble Boost", 0x16: "Bass Boost", 0x17: "Speech",
+    0x30: "Heavy", 0x31: "Clear", 0x32: "Hard", 0x33: "Soft",
+    0xA0: "Własny", 0xA1: "Użytkownika 1", 0xA2: "Użytkownika 2", 0xA3: "Użytkownika 3",
+    0xA4: "Użytkownika 4", 0xA5: "Użytkownika 5",
+}
+
+
+def eq_name(pid, device_name=""):
+    return EQ_NAMES.get(pid) or device_name or f"Preset 0x{pid:02X}"
+
 
 # ---------- ramkowanie ----------
 
@@ -109,9 +128,14 @@ class SonyMDR:
     Wszystkie callbacki wołane z wątku czytającego.
     """
 
-    def __init__(self, sock_factory, on_state=None, on_disconnect=None, proto="v2"):
+    def __init__(self, sock_factory, on_state=None, on_disconnect=None, proto="v2", on_eq=None,
+                 eq_allowed=None):
         self._factory = sock_factory
         self.proto = proto
+        self.on_eq = on_eq or (lambda e: None)
+        self.eq_allowed = set(eq_allowed) if eq_allowed else None   # np. XM6 przyjmuje tylko część presetów
+        # presets: [(id, nazwa)], bands: pasma −10..10 (5 przy Clear Bass, 10 bez), clear_bass: −10..10 albo None
+        self.eq = {"available": False, "preset": None, "presets": [], "clear_bass": None, "bands": []}
         self.on_state = on_state or (lambda s: None)
         self.on_disconnect = on_disconnect or (lambda: None)
         self.sock = None
@@ -140,6 +164,17 @@ class SonyMDR:
             if self._nc.wait(2):
                 break
         log.info("MDR gotowy, wariant NC/ASM=0x%02X, stan=%s", self.variant or 0, self.state)
+        self.request_eq()
+
+    def request_eq(self):
+        t = EQ_TYPE[self.proto]
+        if self.proto == "v2":
+            # typ capability zależy od modelu (zwykły / z trybem ULT); nieobsługiwany słuchawki ignorują
+            self._send(bytes((EQ_GET_CAP, 0x00, 0x01)))
+            self._send(bytes((EQ_GET_CAP, 0x03, 0x01)))
+        else:
+            self._send(bytes((EQ_GET_CAP, t, 0x01)))
+        self._send(bytes((EQ_GET_PARAM, t)))
 
     def close(self):
         self._alive = False
@@ -182,6 +217,75 @@ class SonyMDR:
         self._send(payload)
         st["mode"] = mode
         self.on_state(dict(st))
+
+    def set_eq_preset(self, pid):
+        t = EQ_TYPE[self.proto]
+        self._send(bytes((EQ_SET_PARAM, t, pid, 0x00)))
+        self.eq["preset"] = pid
+        self.on_eq(self._eq_copy())
+        self._send(bytes((EQ_GET_PARAM, t)))   # słuchawki odeślą pasma nowego presetu
+
+    def set_clear_bass(self, value):
+        """Clear Bass −10..+10 (tylko modele z 5 pasmami + Clear Bass)."""
+        eq = self.eq
+        if eq["clear_bass"] is None:
+            return
+        value = max(-10, min(10, int(value)))
+        bands = (eq["bands"] + [0] * 5)[:5]
+        steps = bytes([value + 10] + [b + 10 for b in bands])
+        t = EQ_TYPE[self.proto]
+        # v1 gubi ramkę z presetem i pasmami naraz -> preset "nieokreślony"
+        preset = EQ_UNSPECIFIED if self.proto == "v1" else (eq["preset"] if eq["preset"] is not None else 0xA0)
+        self._send(bytes((EQ_SET_PARAM, t, preset, len(steps))) + steps)
+        eq["clear_bass"] = value
+        self.on_eq(self._eq_copy())
+        self._send(bytes((EQ_GET_PARAM, t)))
+
+    def _eq_copy(self):
+        e = dict(self.eq)
+        e["presets"] = list(e["presets"])
+        e["bands"] = list(e["bands"])
+        return e
+
+    def _handle_eq(self, payload):
+        cmd = payload[0]
+        if cmd == EQ_RET_CAP and len(payload) >= 5:
+            # [cmd, type, band, step, (ult2 step), count, (id, len, name)*]
+            i = 5 if payload[1] == 0x03 and self.proto == "v2" else 4
+            count = payload[i]
+            i += 1
+            presets = []
+            for _ in range(count):
+                if i >= len(payload):
+                    break
+                pid = payload[i]
+                n = payload[i + 1] if i + 1 < len(payload) else 0
+                name = payload[i + 2:i + 2 + n].decode("utf-8", "replace")
+                presets.append((pid, eq_name(pid, name)))
+                i += 2 + n
+            if self.eq_allowed:
+                presets = [p for p in presets if p[0] in self.eq_allowed]
+            if presets:
+                self.eq["presets"] = presets
+                self.eq["available"] = True
+                self.on_eq(self._eq_copy())
+        elif cmd in (EQ_RET_PARAM, EQ_NTFY_PARAM) and len(payload) >= 4 and payload[1] == EQ_TYPE[self.proto]:
+            # [cmd, type, preset, n, steps...]
+            pid, n = payload[2], payload[3]
+            steps = list(payload[4:4 + n])
+            eq = self.eq
+            if pid != EQ_UNSPECIFIED:
+                eq["preset"] = pid
+            if n == 6:
+                eq["clear_bass"] = steps[0] - 10
+                eq["bands"] = [x - 10 for x in steps[1:]]
+            elif n == 10:
+                eq["clear_bass"] = None
+                eq["bands"] = [x - 6 for x in steps]
+            eq["available"] = True
+            if not eq["presets"]:
+                eq["presets"] = [(p, eq_name(p)) for p in (0x00, 0x16, 0x15, 0x14, 0x13, 0x12, 0x11, 0x10, 0x17, 0xA0)]
+            self.on_eq(self._eq_copy())
 
     # --- wysyłanie z ACK ---
     def _send(self, payload: bytes, retries=3):
@@ -247,6 +351,8 @@ class SonyMDR:
         cmd = payload[0]
         if cmd == CONNECT_RET_PROTOCOL_INFO:
             self._proto.set()
+        elif cmd in (EQ_RET_CAP, EQ_RET_PARAM, EQ_NTFY_PARAM):
+            self._handle_eq(payload)
         elif self.proto == "v1" and cmd in (NCASM_RET_PARAM, NCASM_NTFY_PARAM) and len(payload) >= 8 \
                 and payload[1] == V1_NC_ASM:
             # [cmd, type, effect, ncType, ncValue, asmType, asmId, asmValue]

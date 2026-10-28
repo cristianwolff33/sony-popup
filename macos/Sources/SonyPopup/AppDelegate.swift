@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var modeItems: [SoundMode: NSMenuItem] = [:]
     private var modeMenuItem: NSMenuItem!
     private var loginItem: NSMenuItem!
+    private var eqMenuItem: NSMenuItem!
     private var bag = Set<AnyCancellable>()
     private var mediaTimer: Timer?
 
@@ -20,6 +21,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         bluetooth = BluetoothController(model: model)
 
         model.requestMode = { [weak self] mode, level in self?.bluetooth.setMode(mode, level: level) }
+        model.requestEQPreset = { [weak self] id in self?.bluetooth.setEQPreset(id) }
+        model.requestClearBass = { [weak self] v in self?.bluetooth.setClearBass(v) }
         model.mediaCommand = { [weak self] cmd in self?.media(cmd) }
 
         notch.onExpand = { [weak self] in
@@ -81,6 +84,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         modeMenuItem.submenu = modeMenu
         menu.addItem(modeMenuItem)
 
+        eqMenuItem = NSMenuItem(title: "Equalizer", action: nil, keyEquivalent: "")
+        eqMenuItem.submenu = NSMenu()
+        eqMenuItem.isEnabled = false
+        menu.addItem(eqMenuItem)
+
         menu.addItem(.separator())
         loginItem = NSMenuItem(title: "Uruchamiaj przy logowaniu", action: #selector(toggleLogin), keyEquivalent: "")
         loginItem.target = self
@@ -105,7 +113,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 for (m, it) in self.modeItems { it.state = nc.mode == m ? .on : .off; it.isEnabled = ok }
             }
             .store(in: &bag)
+        model.$eq.combineLatest(model.$ncAvailable)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] eq, ok in self?.rebuildEQMenu(eq, enabled: ok) }
+            .store(in: &bag)
         updateLoginItem()
+    }
+
+    private func rebuildEQMenu(_ eq: EQState, enabled: Bool) {
+        let sub = NSMenu()
+        for p in eq.presets {
+            let it = NSMenuItem(title: p.name, action: #selector(pickEQ(_:)), keyEquivalent: "")
+            it.target = self
+            it.tag = Int(p.id)
+            it.state = eq.preset == p.id ? .on : .off
+            sub.addItem(it)
+        }
+        eqMenuItem.submenu = sub
+        eqMenuItem.isEnabled = enabled && eq.available && !eq.presets.isEmpty
+    }
+
+    @objc private func pickEQ(_ sender: NSMenuItem) {
+        bluetooth.setEQPreset(UInt8(clamping: sender.tag))
     }
 
     @objc private func showPopup() { notch.expand(pinFor: 6) }

@@ -66,6 +66,7 @@ final class BluetoothController: NSObject {
         model.battery = nil
         model.ncAvailable = false
         model.ncConnecting = true
+        model.eq = EQState()
         if disconnectNotes[addr] == nil {
             disconnectNotes[addr] = d.register(forDisconnectNotification: self,
                                                selector: #selector(deviceDisconnected(_:device:)))
@@ -79,7 +80,9 @@ final class BluetoothController: NSObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, gen == self.generation, d.isConnected() else { return }
             let c = MDRClient(proto: m.proto)
+            c.eqAllowed = m.eqAllowed
             c.onState = { [weak self] s in self?.model.nc = s }
+            c.onEQ = { [weak self] e in self?.model.eq = e }
             c.onBattery = { [weak self] level, charging in
                 self?.model.battery = level
                 self?.model.charging = charging
@@ -122,6 +125,9 @@ final class BluetoothController: NSObject {
     func setMode(_ mode: SoundMode, level: Int?) {
         client?.setMode(mode, level: level)
     }
+
+    func setEQPreset(_ id: UInt8) { client?.setEQPreset(id) }
+    func setClearBass(_ v: Int) { client?.setClearBass(v) }
 
     func refreshBattery() {
         client?.requestBattery()

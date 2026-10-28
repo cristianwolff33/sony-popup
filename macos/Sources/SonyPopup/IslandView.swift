@@ -31,7 +31,7 @@ struct IslandView: View {
     @ObservedObject var model: AppModel
     static let width: CGFloat = 400
 
-    private var contentHeight: CGFloat { model.nc.mode == .ambient && model.ncAvailable ? 236 : 204 }
+    private var contentHeight: CGFloat { model.islandContentHeight }
 
     var body: some View {
         let notch = model.notchSize
@@ -46,8 +46,13 @@ struct IslandView: View {
 
             if model.expanded {
                 content
-                    .padding(.top, notch.height + 6)
                     .padding(.horizontal, 22)
+                    .padding(.bottom, 18)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .background(GeometryReader { g in
+                        Color.clear.preference(key: ContentHeightKey.self, value: g.size.height)
+                    })
+                    .padding(.top, notch.height + 6)
                     .frame(width: Self.width, height: h, alignment: .top)
                     .transition(.asymmetric(insertion: .opacity.combined(with: .scale(scale: 0.92, anchor: .top))
                                                 .animation(.spring(response: 0.4, dampingFraction: 0.8).delay(0.05)),
@@ -55,6 +60,10 @@ struct IslandView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .onPreferenceChange(ContentHeightKey.self) { v in
+            let target = v + 6
+            if v > 0, abs(model.islandContentHeight - target) > 0.5 { model.islandContentHeight = target }
+        }
         .animation(.spring(response: 0.42, dampingFraction: 0.78), value: model.expanded)
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: contentHeight)
         .preferredColorScheme(.dark)
@@ -69,6 +78,12 @@ struct IslandView: View {
             if model.nc.mode == .ambient && model.ncAvailable {
                 AmbientSlider(level: model.nc.level) { lvl in model.requestMode?(.ambient, lvl) }
                     .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+            if model.eq.available && model.ncAvailable {
+                EQSection(eq: model.eq,
+                          onPreset: { model.requestEQPreset?($0) },
+                          onClearBass: { model.requestClearBass?($0) })
+                    .transition(.opacity)
             }
             Rectangle().fill(.white.opacity(0.08)).frame(height: 1)
             player
@@ -133,6 +148,85 @@ struct IslandView: View {
 }
 
 // MARK: - kontrolki
+
+struct ContentHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+/// Equalizer: presety jako przewijane "pigułki" + suwak Clear Bass.
+struct EQSection: View {
+    let eq: EQState
+    let onPreset: (UInt8) -> Void
+    let onClearBass: (Int) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "slider.vertical.3").font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.55))
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(eq.presets) { p in
+                            PresetChip(name: p.name, selected: eq.preset == p.id) { onPreset(p.id) }
+                        }
+                    }
+                    .padding(.vertical, 1)
+                }
+            }
+            if let cb = eq.clearBass {
+                ClearBassSlider(value: cb, onCommit: onClearBass)
+            }
+        }
+    }
+}
+
+struct PresetChip: View {
+    let name: String
+    let selected: Bool
+    let action: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(name)
+                .font(.system(size: 11.5, weight: .semibold))
+                .lineLimit(1)
+                .foregroundStyle(selected ? Color.white : Color.white.opacity(0.72))
+                .padding(.horizontal, 11)
+                .padding(.vertical, 6)
+                .background(Capsule().fill(selected ? Color(red: 0.17, green: 0.58, blue: 1)
+                                                    : Color.white.opacity(hover ? 0.16 : 0.09)))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(PressScale())
+        .onHover { hover = $0 }
+        .animation(.easeOut(duration: 0.15), value: selected)
+    }
+}
+
+struct ClearBassSlider: View {
+    let value: Int
+    let onCommit: (Int) -> Void
+    @State private var v: Double = 0
+    @State private var editing = false
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text("Clear Bass").font(.system(size: 11.5, weight: .medium)).foregroundStyle(.white.opacity(0.6))
+            Slider(value: $v, in: -10...10, step: 1, onEditingChanged: { e in
+                editing = e
+                if !e { onCommit(Int(v)) }
+            })
+            .tint(Color(red: 0.17, green: 0.58, blue: 1))
+            Text(Int(v) == 0 ? "0" : String(format: "%+d", Int(v)))
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white.opacity(0.75)).frame(width: 26, alignment: .trailing)
+        }
+        .onAppear { v = Double(value) }
+        .onChange(of: value) { new in if !editing { v = Double(new) } }
+    }
+}
 
 /// Zdjęcie słuchawek: po najechaniu unosi się, powiększa i kołysze.
 struct HeadphoneImage: View {

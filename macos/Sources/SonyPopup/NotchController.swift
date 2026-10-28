@@ -22,7 +22,7 @@ final class NotchController {
     /// Wołane przy rozwinięciu (odświeżenie baterii i odtwarzacza).
     var onExpand: (() -> Void)?
 
-    private static let panelHeight: CGFloat = 300
+    private static let panelHeight: CGFloat = 420
 
     init(model: AppModel) {
         self.model = model
@@ -84,7 +84,7 @@ final class NotchController {
 
     /// Aktualny obszar rozwiniętej wyspy (do wykrywania wyjścia kursora).
     private func islandRect() -> NSRect {
-        let h = notch.height + (model.nc.mode == .ambient && model.ncAvailable ? 236 : 204)
+        let h = notch.height + model.islandContentHeight
         return NSRect(x: notch.midX - IslandView.width / 2, y: screen.frame.maxY - h,
                       width: IslandView.width, height: h)
     }
