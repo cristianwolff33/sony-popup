@@ -153,7 +153,7 @@ final class MDRClient: NSObject, IOBluetoothRFCOMMChannelDelegate {
         probeTimer?.invalidate()
         if let ch = channel {
             _ = ch.setDelegate(nil)
-            _ = ch.closeChannel()
+            _ = ch.close()
         }
         channel = nil
     }
